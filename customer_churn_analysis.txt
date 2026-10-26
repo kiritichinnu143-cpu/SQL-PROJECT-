@@ -1,0 +1,647 @@
+================================================================================
+CUSTOMER CHURN ANALYSIS USING MYSQL
+================================================================================
+
+================================================================================
+PART 1 — DATABASE, TABLES, AND SAMPLE DATA
+================================================================================
+
+DROP DATABASE IF EXISTS customer_churn_db;
+CREATE DATABASE customer_churn_db;
+USE customer_churn_db;
+
+CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    age TINYINT UNSIGNED,
+    gender VARCHAR(20),
+    city VARCHAR(80),
+    signup_date DATE NOT NULL,
+    CONSTRAINT chk_customer_age CHECK (age IS NULL OR age BETWEEN 18 AND 110)
+);
+
+CREATE TABLE subscriptions (
+    subscription_id INT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    plan_name VARCHAR(30) NOT NULL,
+    contract_type VARCHAR(30) NOT NULL,
+    monthly_charge DECIMAL(10,2) NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NULL,
+    status ENUM('Active','Churned','Paused') NOT NULL,
+    CONSTRAINT fk_subscription_customer FOREIGN KEY (customer_id)
+        REFERENCES customers(customer_id),
+    CONSTRAINT chk_monthly_charge CHECK (monthly_charge >= 0),
+    CONSTRAINT chk_subscription_dates CHECK (end_date IS NULL OR end_date >= start_date)
+);
+
+CREATE TABLE payments (
+    payment_id INT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    payment_date DATE NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    payment_method VARCHAR(30) NOT NULL,
+    payment_status ENUM('Successful','Failed','Refunded') NOT NULL,
+    CONSTRAINT fk_payment_customer FOREIGN KEY (customer_id)
+        REFERENCES customers(customer_id),
+    CONSTRAINT chk_payment_amount CHECK (amount >= 0)
+);
+
+CREATE TABLE support_tickets (
+    ticket_id INT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    opened_date DATE NOT NULL,
+    issue_type VARCHAR(50) NOT NULL,
+    priority ENUM('Low','Medium','High','Critical') NOT NULL,
+    resolution_status ENUM('Open','In Progress','Resolved') NOT NULL,
+    resolution_hours DECIMAL(8,2) NULL,
+    CONSTRAINT fk_ticket_customer FOREIGN KEY (customer_id)
+        REFERENCES customers(customer_id),
+    CONSTRAINT chk_resolution_hours CHECK (resolution_hours IS NULL OR resolution_hours >= 0)
+);
+
+CREATE TABLE churn_events (
+    churn_event_id INT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    churn_date DATE NOT NULL,
+    churn_reason VARCHAR(80) NOT NULL,
+    feedback VARCHAR(255),
+    CONSTRAINT fk_churn_customer FOREIGN KEY (customer_id)
+        REFERENCES customers(customer_id),
+    CONSTRAINT uq_customer_churn UNIQUE (customer_id)
+);
+
+-- Synthetic sample data: 12 customers, enough to validate the core analyses.
+INSERT INTO customers VALUES
+(1,'Aarav','Sharma',29,'Male','Hyderabad','2023-01-10'),
+(2,'Diya','Reddy',34,'Female','Visakhapatnam','2023-02-15'),
+(3,'Ishaan','Kumar',25,'Male','Vijayawada','2023-03-05'),
+(4,'Meera','Patel',41,'Female','Hyderabad','2023-03-22'),
+(5,'Arjun','Rao',31,'Male','Guntur','2023-04-01'),
+(6,'Ananya','Singh',27,'Female','Visakhapatnam','2023-04-18'),
+(7,'Vivaan','Naidu',38,'Male','Hyderabad','2023-05-09'),
+(8,'Saanvi','Das',23,'Female','Rajahmundry','2023-06-12'),
+(9,'Aditya','Verma',45,'Male','Vijayawada','2023-07-02'),
+(10,'Kavya','Reddy',30,'Female','Guntur','2023-08-17'),
+(11,'Reyansh','Gupta',36,'Male','Hyderabad','2023-09-03'),
+(12,'Tara','Mohan',28,'Female','Visakhapatnam','2023-10-11');
+
+INSERT INTO subscriptions VALUES
+(101,1,'Premium','Annual',70.00,'2023-01-10',NULL,'Active'),
+(102,2,'Basic','Monthly',35.00,'2023-02-15','2024-01-20','Churned'),
+(103,3,'Standard','Monthly',50.00,'2023-03-05',NULL,'Active'),
+(104,4,'Premium','Monthly',85.00,'2023-03-22','2024-02-14','Churned'),
+(105,5,'Basic','Annual',30.00,'2023-04-01',NULL,'Active'),
+(106,6,'Standard','Monthly',55.00,'2023-04-18','2024-03-01','Churned'),
+(107,7,'Premium','Annual',75.00,'2023-05-09',NULL,'Active'),
+(108,8,'Basic','Monthly',32.00,'2023-06-12','2024-04-19','Churned'),
+(109,9,'Standard','Annual',52.00,'2023-07-02',NULL,'Active'),
+(110,10,'Premium','Monthly',90.00,'2023-08-17',NULL,'Active'),
+(111,11,'Basic','Monthly',38.00,'2023-09-03','2024-05-02','Churned'),
+(112,12,'Standard','Monthly',48.00,'2023-10-11',NULL,'Active');
+
+INSERT INTO payments VALUES
+(1001,1,'2024-05-01',70.00,'Card','Successful'),
+(1002,1,'2024-06-01',70.00,'Card','Successful'),
+(1003,2,'2023-12-15',35.00,'UPI','Successful'),
+(1004,2,'2024-01-15',35.00,'UPI','Failed'),
+(1005,3,'2024-05-05',50.00,'UPI','Successful'),
+(1006,3,'2024-06-05',50.00,'UPI','Successful'),
+(1007,4,'2024-01-22',85.00,'Card','Successful'),
+(1008,4,'2024-02-10',85.00,'Card','Failed'),
+(1009,5,'2024-05-01',30.00,'Net Banking','Successful'),
+(1010,6,'2024-02-18',55.00,'UPI','Successful'),
+(1011,6,'2024-03-01',55.00,'UPI','Refunded'),
+(1012,7,'2024-05-09',75.00,'Card','Successful'),
+(1013,8,'2024-03-12',32.00,'UPI','Failed'),
+(1014,9,'2024-05-02',52.00,'Card','Successful'),
+(1015,10,'2024-05-17',90.00,'Card','Successful'),
+(1016,11,'2024-04-03',38.00,'UPI','Failed'),
+(1017,12,'2024-05-11',48.00,'Net Banking','Successful');
+
+INSERT INTO support_tickets VALUES
+(201,1,'2024-01-05','Billing','Low','Resolved',4.0),
+(202,2,'2023-12-20','Network','High','Resolved',30.0),
+(203,2,'2024-01-10','Billing','High','Resolved',48.0),
+(204,3,'2024-02-08','Network','Medium','Resolved',8.0),
+(205,4,'2024-01-15','Billing','Critical','Resolved',72.0),
+(206,4,'2024-02-01','Network','High','Resolved',60.0),
+(207,6,'2024-02-10','Network','High','Resolved',36.0),
+(208,6,'2024-02-20','Network','Critical','Resolved',80.0),
+(209,7,'2024-03-11','Technical','Low','Resolved',3.0),
+(210,8,'2024-03-14','Billing','Medium','Resolved',20.0),
+(211,8,'2024-04-01','Billing','High','In Progress',NULL),
+(212,11,'2024-04-10','Network','High','Resolved',42.0),
+(213,10,'2024-04-17','Technical','Low','Resolved',5.0),
+(214,12,'2024-05-01','Billing','Medium','Open',NULL);
+
+INSERT INTO churn_events VALUES
+(301,2,'2024-01-20','Price','Monthly price increased'),
+(302,4,'2024-02-14','Poor service','Repeated service interruptions'),
+(303,6,'2024-03-01','Poor service','Issues not resolved quickly'),
+(304,8,'2024-04-19','Price','Found a cheaper alternative'),
+(305,11,'2024-05-02','Competitor','Switched to competitor');
+
+-- =========================================================
+
+
+================================================================================
+PART 2 — INDEXES
+================================================================================
+
+CREATE INDEX idx_subscriptions_status_plan
+    ON subscriptions(status, plan_name);
+
+CREATE INDEX idx_payments_customer_status_date
+    ON payments(customer_id, payment_status, payment_date);
+
+CREATE INDEX idx_tickets_customer_priority
+    ON support_tickets(customer_id, priority);
+
+CREATE INDEX idx_churn_date_reason
+    ON churn_events(churn_date, churn_reason);
+
+
+================================================================================
+PART 3 — VIEWS
+================================================================================
+
+-- View 1: one reusable customer-level churn summary.
+CREATE OR REPLACE VIEW vw_customer_churn_summary AS
+SELECT
+    c.customer_id,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    c.city,
+    c.signup_date,
+    s.plan_name,
+    s.contract_type,
+    s.monthly_charge,
+    s.status AS subscription_status,
+    ce.churn_date,
+    ce.churn_reason,
+    CASE WHEN ce.customer_id IS NULL THEN 0 ELSE 1 END AS churn_flag
+FROM customers c
+JOIN subscriptions s ON s.customer_id = c.customer_id
+LEFT JOIN churn_events ce ON ce.customer_id = c.customer_id;
+
+-- View 2: aggregate support and payment indicators per customer.
+CREATE OR REPLACE VIEW vw_customer_service_summary AS
+SELECT
+    c.customer_id,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    COALESCE(st.ticket_count, 0) AS ticket_count,
+    COALESCE(st.high_priority_tickets, 0) AS high_priority_tickets,
+    COALESCE(p.failed_payments, 0) AS failed_payments
+FROM customers c
+LEFT JOIN (
+    SELECT customer_id,
+           COUNT(*) AS ticket_count,
+           SUM(priority IN ('High', 'Critical')) AS high_priority_tickets
+    FROM support_tickets
+    GROUP BY customer_id
+) st ON st.customer_id = c.customer_id
+LEFT JOIN (
+    SELECT customer_id,
+           SUM(payment_status = 'Failed') AS failed_payments
+    FROM payments
+    GROUP BY customer_id
+) p ON p.customer_id = c.customer_id;
+
+
+================================================================================
+PART 4 — STORED PROCEDURE
+================================================================================
+
+DROP PROCEDURE IF EXISTS sp_churn_report;
+DELIMITER $$
+CREATE PROCEDURE sp_churn_report(IN p_start_date DATE, IN p_end_date DATE)
+BEGIN
+    IF p_start_date IS NULL OR p_end_date IS NULL OR p_start_date > p_end_date THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Provide a valid date range: start date must be <= end date';
+    END IF;
+
+    SELECT
+        COUNT(*) AS churn_events_in_period,
+        COUNT(DISTINCT customer_id) AS unique_customers_churned,
+        MIN(churn_date) AS first_churn_date,
+        MAX(churn_date) AS last_churn_date
+    FROM churn_events
+    WHERE churn_date BETWEEN p_start_date AND p_end_date;
+END $$
+DELIMITER ;
+
+================================================================================
+PART 5 — TRIGGERS
+================================================================================
+
+-- Audit table records changes to subscription status.
+CREATE TABLE subscription_status_audit (
+    audit_id INT AUTO_INCREMENT PRIMARY KEY,
+    subscription_id INT NOT NULL,
+    customer_id INT NOT NULL,
+    old_status VARCHAR(20) NOT NULL,
+    new_status VARCHAR(20) NOT NULL,
+    changed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Trigger 1: when a churn event is inserted, synchronize the subscription.
+DROP TRIGGER IF EXISTS trg_sync_subscription_after_churn;
+DELIMITER $$
+CREATE TRIGGER trg_sync_subscription_after_churn
+AFTER INSERT ON churn_events
+FOR EACH ROW
+BEGIN
+    UPDATE subscriptions
+    SET status = 'Churned',
+        end_date = NEW.churn_date
+    WHERE customer_id = NEW.customer_id;
+END $$
+DELIMITER ;
+
+-- Trigger 2: audit subscription status changes.
+DROP TRIGGER IF EXISTS trg_audit_subscription_status;
+DELIMITER $$
+CREATE TRIGGER trg_audit_subscription_status
+AFTER UPDATE ON subscriptions
+FOR EACH ROW
+BEGIN
+    IF OLD.status <> NEW.status THEN
+        INSERT INTO subscription_status_audit
+            (subscription_id, customer_id, old_status, new_status)
+        VALUES
+            (NEW.subscription_id, NEW.customer_id, OLD.status, NEW.status);
+    END IF;
+END $$
+DELIMITER ;
+
+-- Trigger demo A: inspect existing audit records.
+SELECT * FROM subscription_status_audit ORDER BY audit_id;
+
+Empty set (0.00 sec)
+
+-- Trigger demo B: safely test churn synchronization, then undo the test.
+-- Customer 1 is currently Active and has no churn event. The transaction is
+-- rolled back so the sample database returns to its original state.
+START TRANSACTION;
+INSERT INTO churn_events
+    (churn_event_id, customer_id, churn_date, churn_reason, feedback)
+VALUES
+    (399, 1, '2024-06-01', 'Demo test', 'Temporary trigger test');
+SELECT customer_id, status, end_date
+FROM subscriptions
+WHERE customer_id = 1;
+
++-------------+---------+------------+
+| customer_id | status  | end_date   |
++-------------+---------+------------+
+|           1 | Churned | 2024-06-01 |
++-------------+---------+------------+
+1 row in set (0.00 sec)
+
+ROLLBACK;
+
+-- Verify customer 1 is Active again after ROLLBACK.
+SELECT customer_id, status, end_date
+FROM subscriptions
+WHERE customer_id = 1;
+
++-------------+--------+----------+
+| customer_id | status | end_date |
++-------------+--------+----------+
+|           1 | Active | NULL     |
++-------------+--------+----------+
+1 row in set (0.00 sec)
+
+-- Trigger demo C: audit a status change and restore the original status.
+-- These updates create audit rows; final subscription status remains Active.
+UPDATE subscriptions SET status = 'Paused'
+WHERE customer_id = 1 AND status = 'Active';
+UPDATE subscriptions SET status = 'Active'
+WHERE customer_id = 1 AND status = 'Paused';
+SELECT * FROM subscription_status_audit ORDER BY audit_id;
+
++----------+-----------------+-------------+------------+------------+---------------------+
+| audit_id | subscription_id | customer_id | old_status | new_status | changed_at          |
++----------+-----------------+-------------+------------+------------+---------------------+
+|        2 |             101 |           1 | Active     | Paused     | 2026-10-25 12:26:15 |
+|        3 |             101 |           1 | Paused     | Active     | 2026-10-25 12:26:15 |
++----------+-----------------+-------------+------------+------------+---------------------+
+2 rows in set (0.00 sec)
+
+================================================================================
+PART 6 — QUERY BANK: LEVEL 1 (BASIC QUERIES)
+================================================================================
+
+-- Q1. Count records in each table.
+SELECT 'customers' AS table_name, COUNT(*) AS row_count FROM customers
+UNION ALL SELECT 'subscriptions', COUNT(*) FROM subscriptions
+UNION ALL SELECT 'payments', COUNT(*) FROM payments
+UNION ALL SELECT 'support_tickets', COUNT(*) FROM support_tickets
+UNION ALL SELECT 'churn_events', COUNT(*) FROM churn_events;
+
++-----------------+-----------+
+| table_name      | row_count |
++-----------------+-----------+
+| customers       |        12 |
+| subscriptions   |        12 |
+| payments        |        17 |
+| support_tickets |        14 |
+| churn_events    |         5 |
++-----------------+-----------+
+5 rows in set (0.00 sec)
+
+-- Q2. Display customer names and cities, alphabetically.
+SELECT customer_id, CONCAT(first_name, ' ', last_name) AS customer_name, city
+FROM customers
+ORDER BY customer_name;
+
++-------------+---------------+---------------+
+| customer_id | customer_name | city          |
++-------------+---------------+---------------+
+|           1 | Aarav Sharma  | Hyderabad     |
+|           9 | Aditya Verma  | Vijayawada    |
+|           6 | Ananya Singh  | Visakhapatnam |
+|           5 | Arjun Rao     | Guntur        |
+|           2 | Diya Reddy    | Visakhapatnam |
+|           3 | Ishaan Kumar  | Vijayawada    |
+|          10 | Kavya Reddy   | Guntur        |
+|           4 | Meera Patel   | Hyderabad     |
+|          11 | Reyansh Gupta | Hyderabad     |
+|           8 | Saanvi Das    | Rajahmundry   |
+|          12 | Tara Mohan    | Visakhapatnam |
+|           7 | Vivaan Naidu  | Hyderabad     |
++-------------+---------------+---------------+
+12 rows in set (0.00 sec)
+
+-- Q3. Display churned customers with their churn date and reason.
+SELECT c.customer_id, CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+       ce.churn_date, ce.churn_reason
+FROM customers c
+JOIN churn_events ce ON ce.customer_id = c.customer_id
+ORDER BY ce.churn_date;
+
++-------------+---------------+------------+--------------+
+| customer_id | customer_name | churn_date | churn_reason |
++-------------+---------------+------------+--------------+
+|           2 | Diya Reddy    | 2024-01-20 | Price        |
+|           4 | Meera Patel   | 2024-02-14 | Poor service |
+|           6 | Ananya Singh  | 2024-03-01 | Poor service |
+|           8 | Saanvi Das    | 2024-04-19 | Price        |
+|          11 | Reyansh Gupta | 2024-05-02 | Competitor   |
++-------------+---------------+------------+--------------+
+5 rows in set (0.00 sec)
+
+-- Q4. Find payments that failed.
+SELECT payment_id, customer_id, payment_date, amount, payment_method
+FROM payments
+WHERE payment_status = 'Failed'
+ORDER BY payment_date;
+
++------------+-------------+--------------+--------+----------------+
+| payment_id | customer_id | payment_date | amount | payment_method |
++------------+-------------+--------------+--------+----------------+
+|       1004 |           2 | 2024-01-15   |  35.00 | UPI            |
+|       1008 |           4 | 2024-02-10   |  85.00 | Card           |
+|       1013 |           8 | 2024-03-12   |  32.00 | UPI            |
+|       1016 |          11 | 2024-04-03   |  38.00 | UPI            |
++------------+-------------+--------------+--------+----------------+
+4 rows in set (0.00 sec)
+
+================================================================================
+PART 7 — QUERY BANK: LEVEL 2 (INTERMEDIATE QUERIES)
+================================================================================
+
+-- Q5. Calculate historical churn percentage for the sample.
+SELECT
+    COUNT(*) AS total_customers,
+    SUM(ce.customer_id IS NOT NULL) AS churned_customers,
+    ROUND(100.0 * SUM(ce.customer_id IS NOT NULL) / COUNT(*), 2) AS churn_pct
+FROM customers c
+LEFT JOIN churn_events ce ON ce.customer_id = c.customer_id;
+
++-----------------+-------------------+-----------+
+| total_customers | churned_customers | churn_pct |
++-----------------+-------------------+-----------+
+|              12 |                 5 |     41.67 |
++-----------------+-------------------+-----------+
+1 row in set (0.00 sec)
+
+
+-- Q6. Calculate active monthly recurring revenue (MRR), active customers, and ARPU.
+SELECT
+    ROUND(SUM(monthly_charge), 2) AS active_mrr,
+    COUNT(DISTINCT customer_id) AS active_customers,
+    ROUND(SUM(monthly_charge) /
+          NULLIF(COUNT(DISTINCT customer_id), 0), 2) AS arpu
+FROM subscriptions
+WHERE status = 'Active';
+
++------------+------------------+-------+
+| active_mrr | active_customers | arpu  |
++------------+------------------+-------+
+|     415.00 |                7 | 59.29 |
++------------+------------------+-------+
+1 row in set (0.00 sec)
+
+-- Q7. Compare churn percentage by subscription plan.
+SELECT
+    plan_name,
+    COUNT(*) AS total_customers,
+    SUM(status = 'Churned') AS churned_customers,
+    ROUND(100.0 * SUM(status = 'Churned') / COUNT(*), 2) AS churn_pct
+FROM subscriptions
+GROUP BY plan_name
+ORDER BY churn_pct DESC, plan_name;
+
++-----------+-----------------+-------------------+-----------+
+| plan_name | total_customers | churned_customers | churn_pct |
++-----------+-----------------+-------------------+-----------+
+| Basic     |               4 |                 3 |     75.00 |
+| Premium   |               4 |                 1 |     25.00 |
+| Standard  |               4 |                 1 |     25.00 |
++-----------+-----------------+-------------------+-----------+
+3 rows in set (0.00 sec)
+
+-- Q8. Find the most common churn reasons.
+SELECT churn_reason, COUNT(*) AS customers_lost
+FROM churn_events
+GROUP BY churn_reason
+ORDER BY customers_lost DESC, churn_reason;
+
++--------------+----------------+
+| churn_reason | customers_lost |
++--------------+----------------+
+| Poor service |              2 |
+| Price        |              2 |
+| Competitor   |              1 |
++--------------+----------------+
+3 rows in set (0.00 sec)
+
+-- Q9. Show monthly churn trend.
+SELECT DATE_FORMAT(churn_date, '%Y-%m') AS churn_month,
+       COUNT(*) AS customers_churned
+FROM churn_events
+GROUP BY DATE_FORMAT(churn_date, '%Y-%m')
+ORDER BY churn_month;
+
++-------------+-------------------+
+| churn_month | customers_churned |
++-------------+-------------------+
+| 2024-01     |                 1 |
+| 2024-02     |                 1 |
+| 2024-03     |                 1 |
+| 2024-04     |                 1 |
+| 2024-05     |                 1 |
++-------------+-------------------+
+5 rows in set (0.00 sec)
+
+-- Q10. Count support tickets by priority.
+SELECT priority, COUNT(*) AS ticket_count
+FROM support_tickets
+GROUP BY priority
+ORDER BY ticket_count DESC, priority;
+
++----------+--------------+
+| priority | ticket_count |
++----------+--------------+
+| High     |            6 |
+| Low      |            3 |
+| Medium   |            3 |
+| Critical |            2 |
++----------+--------------+
+4 rows in set (0.00 sec)
+
+-- Q11. Show failed payment counts and successful payment totals by customer.
+SELECT
+    c.customer_id,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    SUM(p.payment_status = 'Failed') AS failed_payments,
+    ROUND(SUM(CASE WHEN p.payment_status = 'Successful'
+                   THEN p.amount ELSE 0 END), 2) AS successful_payment_amount
+FROM customers c
+LEFT JOIN payments p ON p.customer_id = c.customer_id
+GROUP BY c.customer_id, customer_name
+ORDER BY failed_payments DESC, successful_payment_amount DESC;
+
++-------------+---------------+-----------------+---------------------------+
+| customer_id | customer_name | failed_payments | successful_payment_amount |
++-------------+---------------+-----------------+---------------------------+
+|           4 | Meera Patel   |               1 |                     85.00 |
+|           2 | Diya Reddy    |               1 |                     35.00 |
+|           8 | Saanvi Das    |               1 |                      0.00 |
+|          11 | Reyansh Gupta |               1 |                      0.00 |
+|           1 | Aarav Sharma  |               0 |                    140.00 |
+|           3 | Ishaan Kumar  |               0 |                    100.00 |
+|          10 | Kavya Reddy   |               0 |                     90.00 |
+|           7 | Vivaan Naidu  |               0 |                     75.00 |
+|           6 | Ananya Singh  |               0 |                     55.00 |
+|           9 | Aditya Verma  |               0 |                     52.00 |
+|          12 | Tara Mohan    |               0 |                     48.00 |
+|           5 | Arjun Rao     |               0 |                     30.00 |
++-------------+---------------+-----------------+---------------------------+
+12 rows in set (0.00 sec)
+
+================================================================================
+PART 8 — QUERY BANK: LEVEL 3 (COMPLEX QUERIES)
+================================================================================
+
+-- Q12. Find customers who have never had a support ticket.
+SELECT c.customer_id, CONCAT(c.first_name, ' ', c.last_name) AS customer_name
+FROM customers c
+LEFT JOIN support_tickets st ON st.customer_id = c.customer_id
+WHERE st.ticket_id IS NULL
+ORDER BY c.customer_id;
+
++-------------+---------------+
+| customer_id | customer_name |
++-------------+---------------+
+|           5 | Arjun Rao     |
+|           9 | Aditya Verma  |
++-------------+---------------+
+2 rows in set (0.00 sec)
+
+-- Q13. Inspect the execution plan for a common failed-payment query.
+
+SELECT customer_id, COUNT(*) AS failed_payments
+FROM payments
+WHERE payment_status = 'Failed'
+  AND payment_date >= '2024-01-01'
+GROUP BY customer_id;
+
++-------------+-----------------+
+| customer_id | failed_payments |
++-------------+-----------------+
+|           2 |               1 |
+|           4 |               1 |
+|           8 |               1 |
+|          11 |               1 |
++-------------+-----------------+
+4 rows in set (0.00 sec)
+
+================================================================================
+PART 9 — DEMO CALLS / FINAL VALIDATION
+================================================================================
+
+-- Reusable view checks.
+SELECT * FROM vw_customer_churn_summary ORDER BY customer_id;
+
++-------------+---------------+---------------+-------------+-----------+---------------+----------------+---------------------+------------+--------------+------------+
+| customer_id | customer_name | city          | signup_date | plan_name | contract_type | monthly_charge | subscription_status | churn_date | churn_reason | churn_flag |
++-------------+---------------+---------------+-------------+-----------+---------------+----------------+---------------------+------------+--------------+------------+
+|           1 | Aarav Sharma  | Hyderabad     | 2023-01-10  | Premium   | Annual        |          70.00 | Active              | NULL       | NULL         |          0 |
+|           2 | Diya Reddy    | Visakhapatnam | 2023-02-15  | Basic     | Monthly       |          35.00 | Churned             | 2024-01-20 | Price        |          1 |
+|           3 | Ishaan Kumar  | Vijayawada    | 2023-03-05  | Standard  | Monthly       |          50.00 | Active              | NULL       | NULL         |          0 |
+|           4 | Meera Patel   | Hyderabad     | 2023-03-22  | Premium   | Monthly       |          85.00 | Churned             | 2024-02-14 | Poor service |          1 |
+|           5 | Arjun Rao     | Guntur        | 2023-04-01  | Basic     | Annual        |          30.00 | Active              | NULL       | NULL         |          0 |
+|           6 | Ananya Singh  | Visakhapatnam | 2023-04-18  | Standard  | Monthly       |          55.00 | Churned             | 2024-03-01 | Poor service |          1 |
+|           7 | Vivaan Naidu  | Hyderabad     | 2023-05-09  | Premium   | Annual        |          75.00 | Active              | NULL       | NULL         |          0 |
+|           8 | Saanvi Das    | Rajahmundry   | 2023-06-12  | Basic     | Monthly       |          32.00 | Churned             | 2024-04-19 | Price        |          1 |
+|           9 | Aditya Verma  | Vijayawada    | 2023-07-02  | Standard  | Annual        |          52.00 | Active              | NULL       | NULL         |          0 |
+|          10 | Kavya Reddy   | Guntur        | 2023-08-17  | Premium   | Monthly       |          90.00 | Active              | NULL       | NULL         |          0 |
+|          11 | Reyansh Gupta | Hyderabad     | 2023-09-03  | Basic     | Monthly       |          38.00 | Churned             | 2024-05-02 | Competitor   |          1 |
+|          12 | Tara Mohan    | Visakhapatnam | 2023-10-11  | Standard  | Monthly       |          48.00 | Active              | NULL       | NULL         |          0 |
++-------------+---------------+---------------+-------------+-----------+---------------+----------------+---------------------+------------+--------------+------------+
+12 rows in set (0.00 sec)
+
+SELECT * FROM vw_customer_service_summary ORDER BY customer_id;
+
++-------------+---------------+--------------+-----------------------+-----------------+
+| customer_id | customer_name | ticket_count | high_priority_tickets | failed_payments |
++-------------+---------------+--------------+-----------------------+-----------------+
+|           1 | Aarav Sharma  |            1 |                     0 |               0 |
+|           2 | Diya Reddy    |            2 |                     2 |               1 |
+|           3 | Ishaan Kumar  |            1 |                     0 |               0 |
+|           4 | Meera Patel   |            2 |                     2 |               1 |
+|           5 | Arjun Rao     |            0 |                     0 |               0 |
+|           6 | Ananya Singh  |            2 |                     2 |               0 |
+|           7 | Vivaan Naidu  |            1 |                     0 |               0 |
+|           8 | Saanvi Das    |            2 |                     1 |               1 |
+|           9 | Aditya Verma  |            0 |                     0 |               0 |
+|          10 | Kavya Reddy   |            1 |                     0 |               0 |
+|          11 | Reyansh Gupta |            1 |                     1 |               1 |
+|          12 | Tara Mohan    |            1 |                     0 |               0 |
++-------------+---------------+--------------+-----------------------+-----------------+
+12 rows in set (0.00 sec)
+
+-- Stored procedure demo.
+CALL sp_churn_report('2024-01-01', '2024-03-31');
+
++------------------------+--------------------------+------------------+-----------------+
+| churn_events_in_period | unique_customers_churned | first_churn_date | last_churn_date |
++------------------------+--------------------------+------------------+-----------------+
+|                      3 |                        3 | 2024-01-20       | 2024-03-01      |
++------------------------+--------------------------+------------------+-----------------+
+1 row in set (0.00 sec)
+
+-- Confirm subscription status and churn-event records agree.
+-- Expected result: empty set for the original sample data.
+EXPLAIN
+SELECT s.customer_id, s.status, ce.churn_date
+FROM subscriptions s
+LEFT JOIN churn_events ce ON ce.customer_id = s.customer_id
+WHERE (s.status = 'Churned' AND ce.customer_id IS NULL)
+   OR (s.status <> 'Churned' AND ce.customer_id IS NOT NULL);
+
+-- End of project script.
